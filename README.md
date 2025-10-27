@@ -1,114 +1,79 @@
-# 📚 Online Library Management System (Flask + MySQL)
+Streamlit Library Management System
 
-## 📄 Project Description
+This is a simple, end-to-end Library Management System built entirely in Python using the Streamlit framework.
 
-The **Online Library Management System** is a simple and efficient web application built using **Flask** (Python) and **MySQL** to manage book circulation in libraries. It allows administrators to:
+Features
 
-- Add and manage student and book records
-- Issue and return books
-- Generate issue logs and reports (CSV format)
+Dashboard: View key metrics like total books, available books, and total members.
 
-This project is designed as a beginner-friendly full-stack project for students learning backend development, databases, and web integration. It demonstrates core CRUD operations, relational database management, and session-based login systems.
+Book Management: Add, search, filter, update quantity, and remove books from the library.
 
-**Tech Stack**:
-- **Backend**: Python (Flask)
-- **Database**: MySQL
-- **Frontend**: HTML, Jinja Templates
+Member Management: Register new members and remove existing ones.
 
-## 🚀 Features
+Transactions: A full checkout and return system that automatically updates book availability and member checkout lists.
 
-- Add/Delete Students and Books
-- Issue and Return Books
-- Auto-generated Reports (CSV)
-- Admin Login System
-- Clean and minimal UI (HTML/CSS)
+Session-Based Persistence: Uses st.session_state to store data, making the app fully functional for a single user session.
 
-## 👨‍🎓 Preloaded Data
+How to Run Locally
 
-The following student and book data has already been inserted into the database:
+Clone this repository:
 
-### Students (IDs 1–10):
+git clone <your-repo-url>
+cd <your-repo-name>
 
-| ID | Name              | Email                         |
-|----|-------------------|-------------------------------|
-| 1  | Aditya Samal      | aditya.samal@example.com      |
-| 2  | Riya Das          | riya.das@example.com          |
-| 3  | Amit Ranjan       | amit.ranjan@example.com       |
-| 4  | Sneha Mohapatra   | sneha.mohapatra@example.com   |
-| 5  | Rahul Sahu        | rahul.sahu@example.com        |
-| 6  | Priya Nanda       | priya.nanda@example.com       |
-| 7  | Sourav Behera     | sourav.behera@example.com     |
-| 8  | Anjali Sethi      | anjali.sethi@example.com      |
-| 9  | Manas Nayak       | manas.nayak@example.com       |
-| 10 | Meera Jena        | meera.jena@example.com        |
+Create a virtual environment (recommended):
 
-### Books (IDs 1–10):
+python -m venv venv
+source venv/bin/activate # On Windows: venv\Scripts\activate
 
-| ID | Title                         | Author                  |
-|----|-------------------------------|-------------------------|
-| 1  | Python Programming Basics     | John Zelle              |
-| 2  | Let Us C                      | Yashavant Kanetkar      |
-| 3  | Introduction to Algorithms    | Thomas H. Cormen        |
-| 4  | Digital Logic Design          | M. Morris Mano          |
-| 5  | Database Management Systems   | Raghu Ramakrishnan      |
-| 6  | Artificial Intelligence       | Stuart Russell          |
-| 7  | Java: The Complete Reference  | Herbert Schildt         |
-| 8  | Signals and Systems           | Alan V. Oppenheim       |
-| 9  | Operating Systems Concepts    | Silberschatz & Galvin   |
-| 10 | Data Structures in C          | Reema Thareja           |
+Install the requirements:
 
----
+pip install -r requirements.txt
 
-## 🛠️ Setup Instructions
+Run the app:
 
-1. Clone the repo:
-   ```bash
-   git clone https://github.com/Aditya-afk-hue/Online-library-Management
-   cd Online-library-Management/Online_Library_Management_System
-   ```
+streamlit run library_app.py
 
-2. Create a virtual environment (optional but recommended):
-   ```bash
-   python -m venv venv
-   venv\Scripts\activate  # For Windows
-   ```
+How to Deploy on Streamlit Community Cloud (Free)
 
-3. Install required packages:
-   ```bash
-   pip install -r requirements.txt
-   ```
+Create a GitHub Repository:
 
-4. Import the `LibraryDB` schema in MySQL Workbench or use the included SQL insert script to load sample data.
+Create a new public repository on GitHub.
 
-5. Run the app:
-   ```bash
-   python app.py
-   ```
+Add the 3 files (library_app.py, requirements.txt, README.md) to this repository.
 
-6. Visit: http://127.0.0.1:5000
+git add .
 
-## 🧑‍💼 Admin Login
+git commit -m "Initial commit"
 
-- **Username:** admin
-- **Password:** admin123
+git push -u origin main
 
-*(Make sure you've inserted this manually into the `Admins` table if needed)*
+Sign up for Streamlit Community Cloud:
 
----
+Go to share.streamlit.io and sign up (you can use your GitHub account).
 
-## 📁 Project Structure
+Deploy the App:
 
-```
-Online_Library_Management_System/
-├── Output/
-├── static/
-├── templates/
-├── lapp.py
-├── librarydb.sq
-├── logs
-└── requirements.txt
-```
+Click the "New app" button.
 
-## 📄 License
+Select "From existing repo".
 
-This project is open-source and free to use for learning purposes.
+Repository: Choose the GitHub repository you just created.
+
+Branch: main (or your default branch).
+
+Main file path: library_app.py
+
+Click "Deploy!"
+
+Your application will be live in a few minutes!
+
+⚠️ Important Note on Data Persistence
+
+This application uses st.session_state to store all library data. This means the data is ephemeral:
+
+The data will persist as long as a single user has the app open in their browser tab.
+
+The data will be completely reset if the app restarts, which happens when you deploy, push new code, or if the app is inactive for a period.
+
+For a true, permanent database, you would need to replace the st.session_state logic with a connection to an external database like Supabase, Airtable, Firebase, or Google Sheets. Streamlit's new st.connection feature makes this much easier.
