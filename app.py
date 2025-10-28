@@ -3,13 +3,7 @@ import pandas as pd
 import uuid
 import json  # To store lists in the SQL database
 from sqlalchemy.exc import OperationalError  # To catch DB errors
-
-# --- APP CONFIGURATION ---
-st.set_page_config(
-    page_title="Zenith Library SQL",
-    page_icon="📚",
-    layout="wide",
-)
+from sqlalchemy import text # Import the text function
 
 # --- DATABASE CONNECTION & INITIALIZATION ---
 
@@ -28,7 +22,7 @@ def initialize_database():
     """Creates tables if they don't exist and adds sample data."""
     with conn.session as s:
         # Create books table
-        s.execute("""
+        s.execute(text("""
             CREATE TABLE IF NOT EXISTS books (
                 ISBN TEXT PRIMARY KEY,
                 Title TEXT,
@@ -37,25 +31,25 @@ def initialize_database():
                 Total_Quantity INTEGER,
                 Available INTEGER
             );
-        """)
+        """))
         # Create members table
-        s.execute("""
+        s.execute(text("""
             CREATE TABLE IF NOT EXISTS members (
                 Member_ID TEXT PRIMARY KEY,
                 Name TEXT,
                 Checked_Out_ISBNs TEXT  -- Storing list as JSON string
             );
-        """)
+        """))
         # Create users table for login
-        s.execute("""
+        s.execute(text("""
             CREATE TABLE IF NOT EXISTS users (
                 username TEXT PRIMARY KEY,
                 password TEXT,
                 role TEXT  -- 'admin' or 'member'
             );
-        """)
+        """))
         # Create transactions table
-        s.execute("""
+        s.execute(text("""
             CREATE TABLE IF NOT EXISTS transactions (
                 Transaction_ID INTEGER PRIMARY KEY AUTOINCREMENT,
                 Member_ID TEXT,
@@ -65,29 +59,29 @@ def initialize_database():
                 FOREIGN KEY (Member_ID) REFERENCES members(Member_ID),
                 FOREIGN KEY (ISBN) REFERENCES books(ISBN)
             );
-        """)
+        """))
         
         # Add sample data only if tables are new
         try:
             # Add sample books if table is empty
-            if s.execute("SELECT COUNT(*) FROM books").scalar() == 0:
-                s.execute("INSERT INTO books (ISBN, Title, Author, Genre, Total_Quantity, Available) VALUES "
+            if s.execute(text("SELECT COUNT(*) FROM books")).scalar() == 0:
+                s.execute(text("INSERT INTO books (ISBN, Title, Author, Genre, Total_Quantity, Available) VALUES "
                           "('978-0321765723', 'The Lord of the Rings', 'J.R.R. Tolkien', 'Fantasy', 5, 5),"
                           "('978-0132354181', 'Clean Code', 'Robert C. Martin', 'Software', 3, 3),"
-                          "('978-0743273565', 'The Great Gatsby', 'F. Scott Fitzgerald', 'Classic', 4, 4);")
+                          "('978-0743273565', 'The Great Gatsby', 'F. Scott Fitzgerald', 'Classic', 4, 4);"))
 
             # Add sample members if table is empty
-            if s.execute("SELECT COUNT(*) FROM members").scalar() == 0:
-                s.execute("INSERT INTO members (Member_ID, Name, Checked_Out_ISBNs) VALUES "
+            if s.execute(text("SELECT COUNT(*) FROM members")).scalar() == 0:
+                s.execute(text("INSERT INTO members (Member_ID, Name, Checked_Out_ISBNs) VALUES "
                           "('M-001', 'Alice Smith', '[]'),"
-                          "('M-002', 'Bob Johnson', '[]');")
+                          "('M-002', 'Bob Johnson', '[]');"))
             
             # Add sample users if table is empty
-            if s.execute("SELECT COUNT(*) FROM users").scalar() == 0:
-                s.execute("INSERT INTO users (username, password, role) VALUES "
+            if s.execute(text("SELECT COUNT(*) FROM users")).scalar() == 0:
+                s.execute(text("INSERT INTO users (username, password, role) VALUES "
                           "('admin', 'admin123', 'admin'),"
                           "('alice', 'pass123', 'member'),"
-                          "('bob', 'pass456', 'member');")
+                          "('bob', 'pass456', 'member');"))
             
             s.commit()
         except OperationalError:
@@ -103,9 +97,9 @@ def check_login(username, password):
     """Checks if username and password are correct."""
     with conn.session as s:
         result = s.execute(
-            "SELECT role, Member_ID FROM users "
+            text("SELECT role, Member_ID FROM users "
             "LEFT JOIN members ON users.username = members.Name "
-            "WHERE username = :username AND password = :password",
+            "WHERE username = :username AND password = :password"),
             params={"username": username, "password": password}
         ).first()
         
@@ -174,7 +168,7 @@ def page_home():
         # Get list of ISBNs
         with conn.session as s:
             json_isbns = s.execute(
-                "SELECT Checked_Out_ISBNs FROM members WHERE Member_ID = :id",
+                text("SELECT Checked_Out_ISBNs FROM members WHERE Member_ID = :id"),
                 params={"id": member_id}
             ).scalar()
             
@@ -218,8 +212,8 @@ def page_book_management():
                     try:
                         with conn.session as s:
                             s.execute(
-                                "INSERT INTO books (ISBN, Title, Author, Genre, Total_Quantity, Available) "
-                                "VALUES (:isbn, :title, :author, :genre, :qty, :avail)",
+                                text("INSERT INTO books (ISBN, Title, Author, Genre, Total_Quantity, Available) "
+                                "VALUES (:isbn, :title, :author, :genre, :qty, :avail)"),
                                 params={
                                     "isbn": isbn, "title": title, "author": author, 
                                     "genre": genre, "qty": quantity, "avail": quantity
@@ -262,7 +256,7 @@ def page_book_management():
                 
                 with conn.session as s:
                     s.execute(
-                        "UPDATE books SET Total_Quantity = :total, Available = :avail WHERE ISBN = :isbn",
+                        text("UPDATE books SET Total_Quantity = :total, Available = :avail WHERE ISBN = :isbn"),
                         params={"total": new_total_quantity, "avail": new_available, "isbn": isbn_to_manage}
                     )
                     s.commit()
@@ -278,8 +272,8 @@ def page_book_management():
                 else:
                     with conn.session as s:
                         # Need to delete transactions first due to foreign key constraint
-                        s.execute("DELETE FROM transactions WHERE ISBN = :isbn", params={"isbn": isbn_to_manage})
-                        s.execute("DELETE FROM books WHERE ISBN = :isbn", params={"isbn": isbn_to_manage})
+                        s.execute(text("DELETE FROM transactions WHERE ISBN = :isbn"), params={"isbn": isbn_to_manage})
+                        s.execute(text("DELETE FROM books WHERE ISBN = :isbn"), params={"isbn": isbn_to_manage})
                         s.commit()
                     st.success("Book removed!")
                     st.rerun()
@@ -303,7 +297,7 @@ def page_member_management():
                 try:
                     with conn.session as s:
                         s.execute(
-                            "INSERT INTO members (Member_ID, Name, Checked_Out_ISBNs) VALUES (:id, :name, '[]')",
+                            text("INSERT INTO members (Member_ID, Name, Checked_Out_ISBNs) VALUES (:id, :name, '[]')"),
                             params={"id": member_id, "name": name}
                         )
                         s.commit()
@@ -349,14 +343,14 @@ def page_user_accounts():
                         with conn.session as s:
                             # Note: In a real app, hash the password!
                             s.execute(
-                                "INSERT INTO users (username, password, role) VALUES (:user, :pass, :role)",
+                                text("INSERT INTO users (username, password, role) VALUES (:user, :pass, :role)"),
                                 params={"user": username, "pass": password, "role": role}
                             )
                             # Link user to member profile
                             if role == 'member':
                                 s.execute(
-                                    "UPDATE users SET Member_ID = (SELECT Member_ID FROM members WHERE Name = :name) "
-                                    "WHERE username = :user",
+                                    text("UPDATE users SET Member_ID = (SELECT Member_ID FROM members WHERE Name = :name) "
+                                    "WHERE username = :user"),
                                     params={"name": name, "user": username}
                                 )
                             s.commit()
@@ -420,7 +414,7 @@ def page_transactions():
                 with conn.session as s:
                     # Get member's current book list
                     json_isbns = s.execute(
-                        "SELECT Checked_Out_ISBNs FROM members WHERE Member_ID = :id",
+                        text("SELECT Checked_Out_ISBNs FROM members WHERE Member_ID = :id"),
                         params={"id": member_id}
                     ).scalar()
                     isbns = json.loads(json_isbns)
@@ -433,17 +427,17 @@ def page_transactions():
                         
                         # 1. Update member's list
                         s.execute(
-                            "UPDATE members SET Checked_Out_ISBNs = :json_isbns WHERE Member_ID = :id",
+                            text("UPDATE members SET Checked_Out_ISBNs = :json_isbns WHERE Member_ID = :id"),
                             params={"json_isbns": new_json_isbns, "id": member_id}
                         )
                         # 2. Decrement book availability
                         s.execute(
-                            "UPDATE books SET Available = Available - 1 WHERE ISBN = :isbn",
+                            text("UPDATE books SET Available = Available - 1 WHERE ISBN = :isbn"),
                             params={"isbn": isbn}
                         )
                         # 3. Log transaction
                         s.execute(
-                            "INSERT INTO transactions (Member_ID, ISBN, Type) VALUES (:member_id, :isbn, 'checkout')",
+                            text("INSERT INTO transactions (Member_ID, ISBN, Type) VALUES (:member_id, :isbn, 'checkout')"),
                             params={"member_id": member_id, "isbn": isbn}
                         )
                         s.commit()
@@ -490,17 +484,17 @@ def page_transactions():
                     
                     # 1. Update member's list
                     s.execute(
-                        "UPDATE members SET Checked_Out_ISBNs = :json_isbns WHERE Member_ID = :id",
+                        text("UPDATE members SET Checked_Out_ISBNs = :json_isbns WHERE Member_ID = :id"),
                         params={"json_isbns": new_json_isbns, "id": member_id_return}
                     )
                     # 2. Increment book availability
                     s.execute(
-                        "UPDATE books SET Available = Available + 1 WHERE ISBN = :isbn",
+                        text("UPDATE books SET Available = Available + 1 WHERE ISBN = :isbn"),
                         params={"isbn": isbn_return}
                     )
                     # 3. Log transaction
                     s.execute(
-                        "INSERT INTO transactions (Member_ID, ISBN, Type) VALUES (:member_id, :isbn, 'return')",
+                        text("INSERT INTO transactions (Member_ID, ISBN, Type) VALUES (:member_id, :isbn, 'return')"),
                         params={"member_id": member_id_return, "isbn": isbn_return}
                     )
                     s.commit()
@@ -550,4 +544,5 @@ else:
     # Display the selected page
     page_function = PAGES[page_selection]
     page_function()
+
 
