@@ -1,67 +1,205 @@
 import streamlit as st
 import pandas as pd
-import uuid # To generate unique member IDs
+import uuid
+import json  # To store lists in the SQL database
+from sqlalchemy.exc import OperationalError  # To catch DB errors
 
 # --- APP CONFIGURATION ---
 st.set_page_config(
-    page_title="Zenith Library Management",
+    page_title="Zenith Library SQL",
     page_icon="📚",
     layout="wide",
-    initial_sidebar_state="expanded",
 )
 
-# --- HELPER FUNCTIONS ---
+# --- DATABASE CONNECTION & INITIALIZATION ---
 
-def initialize_data():
-    """Initializes session state with sample data if it doesn't exist."""
-    if 'books' not in st.session_state:
-        # Sample book data
-        sample_books = {
-            'ISBN': ['978-0321765723', '978-0132354181', '978-0743273565', '978-1982137138'],
-            'Title': ['The Lord of the Rings', 'Clean Code', 'The Great Gatsby', 'The Seven Husbands of Evelyn Hugo'],
-            'Author': ['J.R.R. Tolkien', 'Robert C. Martin', 'F. Scott Fitzgerald', 'Taylor Jenkins Reid'],
-            'Genre': ['Fantasy', 'Software', 'Classic', 'Fiction'],
-            'Total Quantity': [5, 3, 4, 2],
-            'Available': [5, 3, 4, 2] # Initially, all books are available
-        }
-        st.session_state.books = pd.DataFrame(sample_books)
-        st.session_state.books.set_index('ISBN', inplace=True)
+# Initialize connection.
+# Uses st.cache_resource to only run once.
+@st.cache_resource
+def get_db_connection():
+    """Returns a connection to the SQLite database."""
+    # The URL points to a local file 'library.db'
+    # On Streamlit Community Cloud, this file will be ephemeral.
+    return st.connection("library_db", type="sql", url="sqlite:///library.db")
 
-    if 'members' not in st.session_state:
-        # Sample member data
-        sample_members = {
-            'Member ID': ['M-001', 'M-002'],
-            'Name': ['Alice Smith', 'Bob Johnson'],
-            'Checked Out ISBNs': [[], []] # List to store ISBNs of checked-out books
-        }
-        st.session_state.members = pd.DataFrame(sample_members)
-        st.session_state.members.set_index('Member ID', inplace=True)
+conn = get_db_connection()
+
+def initialize_database():
+    """Creates tables if they don't exist and adds sample data."""
+    with conn.session as s:
+        # Create books table
+        s.execute("""
+            CREATE TABLE IF NOT EXISTS books (
+                ISBN TEXT PRIMARY KEY,
+                Title TEXT,
+                Author TEXT,
+                Genre TEXT,
+                Total_Quantity INTEGER,
+                Available INTEGER
+            );
+        """)
+        # Create members table
+        s.execute("""
+            CREATE TABLE IF NOT EXISTS members (
+                Member_ID TEXT PRIMARY KEY,
+                Name TEXT,
+                Checked_Out_ISBNs TEXT  -- Storing list as JSON string
+            );
+        """)
+        # Create users table for login
+        s.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                password TEXT,
+                role TEXT  -- 'admin' or 'member'
+            );
+        """)
+        # Create transactions table
+        s.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                Transaction_ID INTEGER PRIMARY KEY AUTOINCREMENT,
+                Member_ID TEXT,
+                ISBN TEXT,
+                Type TEXT, -- 'checkout' or 'return'
+                Timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (Member_ID) REFERENCES members(Member_ID),
+                FOREIGN KEY (ISBN) REFERENCES books(ISBN)
+            );
+        """)
+        
+        # Add sample data only if tables are new
+        try:
+            # Add sample books if table is empty
+            if s.execute("SELECT COUNT(*) FROM books").scalar() == 0:
+                s.execute("INSERT INTO books (ISBN, Title, Author, Genre, Total_Quantity, Available) VALUES "
+                          "('978-0321765723', 'The Lord of the Rings', 'J.R.R. Tolkien', 'Fantasy', 5, 5),"
+                          "('978-0132354181', 'Clean Code', 'Robert C. Martin', 'Software', 3, 3),"
+                          "('978-0743273565', 'The Great Gatsby', 'F. Scott Fitzgerald', 'Classic', 4, 4);")
+
+            # Add sample members if table is empty
+            if s.execute("SELECT COUNT(*) FROM members").scalar() == 0:
+                s.execute("INSERT INTO members (Member_ID, Name, Checked_Out_ISBNs) VALUES "
+                          "('M-001', 'Alice Smith', '[]'),"
+                          "('M-002', 'Bob Johnson', '[]');")
+            
+            # Add sample users if table is empty
+            if s.execute("SELECT COUNT(*) FROM users").scalar() == 0:
+                s.execute("INSERT INTO users (username, password, role) VALUES "
+                          "('admin', 'admin123', 'admin'),"
+                          "('alice', 'pass123', 'member'),"
+                          "('bob', 'pass456', 'member');")
+            
+            s.commit()
+        except OperationalError:
+            # Handle potential race condition or DB lock
+            s.rollback()
+
+# Run initialization
+initialize_database()
+
+# --- AUTHENTICATION ---
+
+def check_login(username, password):
+    """Checks if username and password are correct."""
+    with conn.session as s:
+        result = s.execute(
+            "SELECT role, Member_ID FROM users "
+            "LEFT JOIN members ON users.username = members.Name "
+            "WHERE username = :username AND password = :password",
+            params={"username": username, "password": password}
+        ).first()
+        
+        if result:
+            role, member_id = result
+            st.session_state.logged_in = True
+            st.session_state.user_role = role
+            st.session_state.username = username
+            # If user is a member, link them to their member profile
+            st.session_state.member_id = member_id if role == 'member' else None
+            st.rerun()
+        else:
+            st.error("Incorrect username or password")
+
+def show_login_page():
+    """Displays the login form."""
+    st.set_page_config(page_title="Library Login")
+    st.title("📚 Zenith Library Login")
+    
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Login")
+        
+        if submitted:
+            check_login(username, password)
+            
+    st.info("Sample Logins:\n- Admin: `admin` / `admin123`\n- Member: `alice` / `pass123`")
 
 # --- PAGE 1: HOME/DASHBOARD ---
 
 def page_home():
-    st.title("📚 Zenith Library Dashboard")
-    st.markdown("Welcome to the Zenith Library Management System. Use the sidebar to navigate.")
+    st.title(f"📚 Welcome, {st.session_state.username}!")
+    st.markdown("Welcome to the Zenith Library Management System.")
 
-    total_books = st.session_state.books['Total Quantity'].sum()
-    available_books = st.session_state.books['Available'].sum()
-    total_members = len(st.session_state.members)
+    st.warning("🚨 **Note:** This app uses an SQLite database file. On Streamlit Community Cloud, "
+               "this file is **ephemeral** and all data will be **RESET** when the app restarts.", icon="⚠️")
+    
+    # Admin Dashboard
+    if st.session_state.user_role == 'admin':
+        st.subheader("Admin Dashboard")
+        
+        # Fetch metrics
+        total_books = conn.query("SELECT SUM(Total_Quantity) FROM books", ttl=5).iloc[0, 0]
+        available_books = conn.query("SELECT SUM(Available) FROM books", ttl=5).iloc[0, 0]
+        total_members = conn.query("SELECT COUNT(*) FROM members", ttl=5).iloc[0, 0]
 
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Total Book Titles", len(st.session_state.books))
-    col2.metric("Total Book Copies", f"{available_books} / {total_books}")
-    col3.metric("Total Members", total_members)
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Book Titles", conn.query("SELECT COUNT(*) FROM books", ttl=5).iloc[0, 0])
+        col2.metric("Total Book Copies", f"{available_books} / {total_books}")
+        col3.metric("Total Members", total_members)
+        
+        st.divider()
+        st.subheader("Recent Transactions")
+        transactions_df = conn.query("SELECT * FROM transactions ORDER BY Timestamp DESC LIMIT 10", ttl=5)
+        st.dataframe(transactions_df, use_container_width=True)
 
-    st.divider()
+    # Member Dashboard
+    if st.session_state.user_role == 'member':
+        st.subheader("Your Checked-Out Books")
+        member_id = st.session_state.member_id
+        if not member_id:
+            st.error("Your user account is not linked to a member profile. Please contact an admin.")
+            return
 
-    st.subheader("Available Books")
-    available_df = st.session_state.books[st.session_state.books['Available'] > 0]
-    st.dataframe(available_df, use_container_width=True)
+        # Get list of ISBNs
+        with conn.session as s:
+            json_isbns = s.execute(
+                "SELECT Checked_Out_ISBNs FROM members WHERE Member_ID = :id",
+                params={"id": member_id}
+            ).scalar()
+            
+        isbns = json.loads(json_isbns)
+        
+        if not isbns:
+            st.info("You have no books checked out.")
+        else:
+            # Fetch book details for the checked-out ISBNs
+            # Using a placeholder list for the SQL query
+            placeholders = ','.join('?' for _ in isbns)
+            books_df = conn.query(
+                f"SELECT Title, Author, Genre FROM books WHERE ISBN IN ({placeholders})",
+                params=isbns,
+                ttl=5
+            )
+            st.dataframe(books_df, use_container_width=True)
 
-# --- PAGE 2: BOOK MANAGEMENT ---
+# --- PAGE 2: BOOK MANAGEMENT (Admin Only) ---
 
 def page_book_management():
     st.title("📖 Book Management")
+    if st.session_state.user_role != 'admin':
+        st.error("Access denied. Admin only.")
+        return
 
     with st.expander("Add New Book", expanded=False):
         with st.form("add_book_form", clear_on_submit=True):
@@ -76,162 +214,186 @@ def page_book_management():
             if submitted:
                 if not all([isbn, title, author, genre, quantity]):
                     st.error("Please fill in all fields.")
-                elif isbn in st.session_state.books.index:
-                    st.error(f"ISBN {isbn} already exists. Please use a unique ISBN.")
                 else:
-                    new_book_data = {
-                        'Title': title,
-                        'Author': author,
-                        'Genre': genre,
-                        'Total Quantity': quantity,
-                        'Available': quantity
-                    }
-                    new_book_df = pd.DataFrame(new_book_data, index=[isbn])
-                    st.session_state.books = pd.concat([st.session_state.books, new_book_df])
-                    st.success(f"Book '{title}' by {author} added successfully!")
-                    st.rerun()
+                    try:
+                        with conn.session as s:
+                            s.execute(
+                                "INSERT INTO books (ISBN, Title, Author, Genre, Total_Quantity, Available) "
+                                "VALUES (:isbn, :title, :author, :genre, :qty, :avail)",
+                                params={
+                                    "isbn": isbn, "title": title, "author": author, 
+                                    "genre": genre, "qty": quantity, "avail": quantity
+                                }
+                            )
+                            s.commit()
+                        st.success(f"Book '{title}' by {author} added successfully!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to add book. ISBN might already exist. Error: {e}")
 
     st.divider()
-    
     st.subheader("Manage Existing Books")
-    if st.session_state.books.empty:
-        st.warning("No books in the library. Add some books above.")
-        return
-
-    # Search and Filter
-    search_col, filter_col = st.columns([3, 1])
-    with search_col:
-        search_term = st.text_input("Search by Title or Author", placeholder="Search...")
-    with filter_col:
-        genre_filter = st.selectbox("Filter by Genre", options=["All"] + sorted(st.session_state.books['Genre'].unique()))
-
-    # Apply filters
-    filtered_books = st.session_state.books
-    if search_term:
-        filtered_books = filtered_books[
-            filtered_books['Title'].str.contains(search_term, case=False) |
-            filtered_books['Author'].str.contains(search_term, case=False)
-        ]
-    if genre_filter != "All":
-        filtered_books = filtered_books[filtered_books['Genre'] == genre_filter]
-
-    st.dataframe(filtered_books, use_container_width=True)
+    books_df = conn.query("SELECT * FROM books", ttl=5)
+    st.dataframe(books_df, use_container_width=True)
 
     # Edit/Delete Section
     st.subheader("Edit or Remove Book")
     isbn_to_manage = st.selectbox(
         "Select Book (by ISBN) to Manage", 
-        options=st.session_state.books.index,
-        format_func=lambda x: f"{x} - {st.session_state.books.loc[x, 'Title']}"
+        options=books_df['ISBN'],
+        format_func=lambda x: f"{x} - {books_df.set_index('ISBN').loc[x, 'Title']}"
     )
 
     if isbn_to_manage:
-        book_data = st.session_state.books.loc[isbn_to_manage]
+        book_data = books_df.set_index('ISBN').loc[isbn_to_manage]
         
         col1, col2 = st.columns(2)
-        
         with col1:
             st.markdown(f"**Title:** {book_data['Title']}")
-            st.markdown(f"**Author:** {book_data['Author']}")
-            
             # Edit Quantity
             new_total_quantity = st.number_input(
                 "Update Total Quantity", 
-                min_value=book_data['Total Quantity'] - book_data['Available'], # Cannot be less than books checked out
-                value=book_data['Total Quantity']
+                min_value=book_data['Total_Quantity'] - book_data['Available'],
+                value=book_data['Total_Quantity']
             )
             if st.button("Update Quantity"):
-                # Calculate new available count
-                checked_out_count = book_data['Total Quantity'] - book_data['Available']
+                checked_out_count = book_data['Total_Quantity'] - book_data['Available']
                 new_available = new_total_quantity - checked_out_count
                 
-                st.session_state.books.at[isbn_to_manage, 'Total Quantity'] = new_total_quantity
-                st.session_state.books.at[isbn_to_manage, 'Available'] = new_available
+                with conn.session as s:
+                    s.execute(
+                        "UPDATE books SET Total_Quantity = :total, Available = :avail WHERE ISBN = :isbn",
+                        params={"total": new_total_quantity, "avail": new_available, "isbn": isbn_to_manage}
+                    )
+                    s.commit()
                 st.success("Quantity updated!")
                 st.rerun()
         
         with col2:
-            st.markdown(f"**Genre:** {book_data['Genre']}")
-            st.markdown(f"**Available:** {book_data['Available']} / {book_data['Total Quantity']}")
-            
+            st.markdown(f"**Available:** {book_data['Available']} / {book_data['Total_Quantity']}")
             # Delete Book
             if st.button("Remove Book from Library", type="primary"):
-                if book_data['Available'] < book_data['Total Quantity']:
+                if book_data['Available'] < book_data['Total_Quantity']:
                     st.error("Cannot remove book. Some copies are still checked out.")
                 else:
-                    st.session_state.books = st.session_state.books.drop(index=isbn_to_manage)
+                    with conn.session as s:
+                        # Need to delete transactions first due to foreign key constraint
+                        s.execute("DELETE FROM transactions WHERE ISBN = :isbn", params={"isbn": isbn_to_manage})
+                        s.execute("DELETE FROM books WHERE ISBN = :isbn", params={"isbn": isbn_to_manage})
+                        s.commit()
                     st.success("Book removed!")
                     st.rerun()
 
-# --- PAGE 3: MEMBER MANAGEMENT ---
+# --- PAGE 3: MEMBER MANAGEMENT (Admin Only) ---
 
 def page_member_management():
     st.title("🧑‍🤝‍🧑 Member Management")
+    if st.session_state.user_role != 'admin':
+        st.error("Access denied. Admin only.")
+        return
+
+    st.info("Note: To create a *login* for a member, add a user in the 'User Accounts' page with a matching name.")
 
     with st.expander("Register New Member", expanded=False):
         with st.form("add_member_form", clear_on_submit=True):
             name = st.text_input("Member Name")
             submitted = st.form_submit_button("Register Member")
-
-            if submitted:
-                if not name:
-                    st.error("Please enter a name.")
-                else:
-                    # Generate a unique member ID
-                    member_id = f"M-{uuid.uuid4().hex[:6].upper()}"
-                    new_member_data = {
-                        'Name': name,
-                        'Checked Out ISBNs': [[]] # Initialize with an empty list
-                    }
-                    new_member_df = pd.DataFrame(new_member_data, index=[member_id])
-                    
-                    # Ensure the list is stored as an object
-                    st.session_state.members = pd.concat([st.session_state.members, new_member_df])
-                    st.session_state.members['Checked Out ISBNs'] = st.session_state.members['Checked Out ISBNs'].astype('object')
-
+            if submitted and name:
+                member_id = f"M-{uuid.uuid4().hex[:6].upper()}"
+                try:
+                    with conn.session as s:
+                        s.execute(
+                            "INSERT INTO members (Member_ID, Name, Checked_Out_ISBNs) VALUES (:id, :name, '[]')",
+                            params={"id": member_id, "name": name}
+                        )
+                        s.commit()
                     st.success(f"Member '{name}' registered with ID: {member_id}")
                     st.rerun()
+                except Exception as e:
+                    st.error(f"Failed to add member. Error: {e}")
 
     st.divider()
-
     st.subheader("Current Members")
-    if st.session_state.members.empty:
-        st.warning("No members registered.")
+    members_df = conn.query("SELECT * FROM members", ttl=5)
+    st.dataframe(members_df, use_container_width=True)
+
+# --- PAGE 4: USER ACCOUNTS (Admin Only) ---
+
+def page_user_accounts():
+    st.title("🔑 User Account Management")
+    if st.session_state.user_role != 'admin':
+        st.error("Access denied. Admin only.")
         return
 
-    # Display members, formatting the list of ISBNs
-    members_display = st.session_state.members.copy()
-    members_display['Checked Out ISBNs'] = members_display['Checked Out ISBNs'].apply(lambda x: ", ".join(x) if x else "None")
-    members_display.rename(columns={'Checked Out ISBNs': 'Books Checked Out'}, inplace=True)
-    st.dataframe(members_display, use_container_width=True)
+    with st.expander("Add New User Account", expanded=False):
+        with st.form("add_user_form", clear_on_submit=True):
+            username = st.text_input("Username")
+            password = st.text_input("Password", type="password")
+            role = st.selectbox("Role", ["member", "admin"])
+            
+            # Link to member profile if role is 'member'
+            member_name_options = conn.query("SELECT Name FROM members ORDER BY Name", ttl=5)['Name']
+            if role == 'member':
+                name = st.selectbox("Link to Member Profile (Name)", member_name_options)
+            
+            submitted = st.form_submit_button("Create User")
+            
+            if submitted:
+                if not (username and password and role):
+                    st.error("Please fill all fields.")
+                else:
+                    if role == 'member' and not name:
+                        st.error("Please select a member profile to link.")
+                        return
+                    try:
+                        with conn.session as s:
+                            # Note: In a real app, hash the password!
+                            s.execute(
+                                "INSERT INTO users (username, password, role) VALUES (:user, :pass, :role)",
+                                params={"user": username, "pass": password, "role": role}
+                            )
+                            # Link user to member profile
+                            if role == 'member':
+                                s.execute(
+                                    "UPDATE users SET Member_ID = (SELECT Member_ID FROM members WHERE Name = :name) "
+                                    "WHERE username = :user",
+                                    params={"name": name, "user": username}
+                                )
+                            s.commit()
+                        st.success(f"User '{username}' created with role '{role}'.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to create user. Username may already exist. Error: {e}")
 
-    # Remove Member Section
-    st.subheader("Remove Member")
-    member_to_remove = st.selectbox(
-        "Select Member to Remove", 
-        options=st.session_state.members.index,
-        format_func=lambda x: f"{x} - {st.session_state.members.loc[x, 'Name']}"
-    )
+    st.divider()
+    st.subheader("Existing User Accounts")
+    users_df = conn.query("SELECT username, role, Member_ID FROM users", ttl=5)
+    st.dataframe(users_df, use_container_width=True)
 
-    if member_to_remove:
-        member_data = st.session_state.members.loc[member_to_remove]
-        
-        if st.button("Remove Member", type="primary"):
-            if member_data['Checked Out ISBNs']: # Check if list is not empty
-                st.error("Cannot remove member. They still have books checked out.")
-            else:
-                st.session_state.members = st.session_state.members.drop(index=member_to_remove)
-                st.success(f"Member {member_data['Name']} removed.")
-                st.rerun()
 
-# --- PAGE 4: TRANSACTIONS (CHECK OUT / RETURN) ---
+# --- PAGE 5: TRANSACTIONS ---
 
 def page_transactions():
     st.title("🔄 Book Transactions")
 
-    if st.session_state.books.empty or st.session_state.members.empty:
+    books_df = conn.query("SELECT * FROM books", ttl=5)
+    members_df = conn.query("SELECT * FROM members", ttl=5)
+
+    if books_df.empty or members_df.empty:
         st.warning("Please add books and members before managing transactions.")
         return
+
+    # For Members, auto-select their profile
+    if st.session_state.user_role == 'member':
+        st.subheader(f"Transactions for: {st.session_state.username}")
+        member_id_options = [st.session_state.member_id]
+        if not st.session_state.member_id:
+            st.error("Your account is not linked to a member profile. Cannot check out books.")
+            return
+    else:
+        # Admins can select any member
+        member_id_options = members_df['Member_ID']
+
 
     col1, col2 = st.columns(2)
 
@@ -241,104 +403,151 @@ def page_transactions():
         with st.form("checkout_form", clear_on_submit=True):
             member_id = st.selectbox(
                 "Select Member", 
-                options=st.session_state.members.index,
-                format_func=lambda x: f"{x} - {st.session_state.members.loc[x, 'Name']}"
+                options=member_id_options,
+                format_func=lambda x: f"{x} - {members_df.set_index('Member_ID').loc[x, 'Name']}"
             )
             
-            # Only show available books
-            available_books = st.session_state.books[st.session_state.books['Available'] > 0]
+            available_books_df = books_df[books_df['Available'] > 0]
             isbn = st.selectbox(
                 "Select Book (Available)", 
-                options=available_books.index,
-                format_func=lambda x: f"{x} - {available_books.loc[x, 'Title']}"
+                options=available_books_df['ISBN'],
+                format_func=lambda x: f"{x} - {available_books_df.set_index('ISBN').loc[x, 'Title']}"
             )
             
             checkout_submitted = st.form_submit_button("Check Out")
 
-            if checkout_submitted:
-                if not member_id or not isbn:
-                    st.error("Please select a member and a book.")
-                else:
-                    # Check if member already has this book
-                    member_books = st.session_state.members.at[member_id, 'Checked Out ISBNs']
-                    if isbn in member_books:
+            if checkout_submitted and member_id and isbn:
+                with conn.session as s:
+                    # Get member's current book list
+                    json_isbns = s.execute(
+                        "SELECT Checked_Out_ISBNs FROM members WHERE Member_ID = :id",
+                        params={"id": member_id}
+                    ).scalar()
+                    isbns = json.loads(json_isbns)
+                    
+                    if isbn in isbns:
                         st.error("This member already has this book checked out.")
                     else:
-                        # 1. Decrement book availability
-                        st.session_state.books.at[isbn, 'Available'] -= 1
+                        isbns.append(isbn)
+                        new_json_isbns = json.dumps(isbns)
                         
-                        # 2. Add book to member's list
-                        member_books.append(isbn)
-                        st.session_state.members.at[member_id, 'Checked Out ISBNs'] = member_books
-                        
-                        st.success(f"Book '{st.session_state.books.at[isbn, 'Title']}' checked out to {st.session_state.members.at[member_id, 'Name']}.")
+                        # 1. Update member's list
+                        s.execute(
+                            "UPDATE members SET Checked_Out_ISBNs = :json_isbns WHERE Member_ID = :id",
+                            params={"json_isbns": new_json_isbns, "id": member_id}
+                        )
+                        # 2. Decrement book availability
+                        s.execute(
+                            "UPDATE books SET Available = Available - 1 WHERE ISBN = :isbn",
+                            params={"isbn": isbn}
+                        )
+                        # 3. Log transaction
+                        s.execute(
+                            "INSERT INTO transactions (Member_ID, ISBN, Type) VALUES (:member_id, :isbn, 'checkout')",
+                            params={"member_id": member_id, "isbn": isbn}
+                        )
+                        s.commit()
+                        st.success("Book checked out successfully!")
                         st.rerun()
 
     # --- Return Section ---
     with col2:
         st.subheader("Return Book")
         with st.form("return_form", clear_on_submit=True):
-            # Select member first to filter books
             member_id_return = st.selectbox(
                 "Select Member Returning Book", 
-                options=st.session_state.members.index,
-                format_func=lambda x: f"{x} - {st.session_state.members.loc[x, 'Name']}",
+                options=member_id_options,
+                format_func=lambda x: f"{x} - {members_df.set_index('Member_ID').loc[x, 'Name']}",
                 key="return_member_select"
             )
             
-            books_to_return = []
+            books_to_return_options = []
             if member_id_return:
-                books_to_return = st.session_state.members.at[member_id_return, 'Checked Out ISBNs']
+                json_isbns = conn.query(
+                    "SELECT Checked_Out_ISBNs FROM members WHERE Member_ID = :id",
+                    params={"id": member_id_return},
+                    ttl=5
+                ).iloc[0,0]
+                books_to_return_options = json.loads(json_isbns)
             
-            if not books_to_return:
+            if not books_to_return_options:
                 st.info("This member has no books checked out.")
                 isbn_return = None
             else:
                 isbn_return = st.selectbox(
                     "Select Book to Return",
-                    options=books_to_return,
-                    format_func=lambda x: f"{x} - {st.session_state.books.loc[x, 'Title']}"
+                    options=books_to_return_options,
+                    format_func=lambda x: f"{x} - {books_df.set_index('ISBN').loc[x, 'Title']}"
                 )
             
             return_submitted = st.form_submit_button("Return Book")
 
-            if return_submitted:
-                if not member_id_return or not isbn_return:
-                    st.error("Please select a member and a book to return.")
-                else:
-                    # 1. Increment book availability
-                    st.session_state.books.at[isbn_return, 'Available'] += 1
+            if return_submitted and member_id_return and isbn_return:
+                with conn.session as s:
+                    isbns = json.loads(json_isbns)
+                    isbns.remove(isbn_return)
+                    new_json_isbns = json.dumps(isbns)
                     
-                    # 2. Remove book from member's list
-                    member_books = st.session_state.members.at[member_id_return, 'Checked Out ISBNs']
-                    member_books.remove(isbn_return)
-                    st.session_state.members.at[member_id_return, 'Checked Out ISBNs'] = member_books
-                    
-                    st.success(f"Book '{st.session_state.books.at[isbn_return, 'Title']}' returned by {st.session_state.members.at[member_id_return, 'Name']}.")
+                    # 1. Update member's list
+                    s.execute(
+                        "UPDATE members SET Checked_Out_ISBNs = :json_isbns WHERE Member_ID = :id",
+                        params={"json_isbns": new_json_isbns, "id": member_id_return}
+                    )
+                    # 2. Increment book availability
+                    s.execute(
+                        "UPDATE books SET Available = Available + 1 WHERE ISBN = :isbn",
+                        params={"isbn": isbn_return}
+                    )
+                    # 3. Log transaction
+                    s.execute(
+                        "INSERT INTO transactions (Member_ID, ISBN, Type) VALUES (:member_id, :isbn, 'return')",
+                        params={"member_id": member_id_return, "isbn": isbn_return}
+                    )
+                    s.commit()
+                    st.success("Book returned successfully!")
                     st.rerun()
 
+# --- MAIN APP ROUTER ---
 
-# --- MAIN APP LOGIC ---
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.user_role = None
+    st.session_state.username = None
+    st.session_state.member_id = None
 
-# Initialize data on first run
-initialize_data()
+if not st.session_state.logged_in:
+    show_login_page()
+else:
+    # --- Sidebar Navigation ---
+    st.sidebar.title("Navigation")
+    st.sidebar.markdown(f"Logged in as: **{st.session_state.username}** (`{st.session_state.user_role}`)")
+    
+    if st.sidebar.button("Logout"):
+        for key in st.session_state.keys():
+            del st.session_state[key]
+        st.rerun()
 
-# Sidebar Navigation
-st.sidebar.title("Navigation")
-page = st.sidebar.radio(
-    "Go to",
-    ["🏠 Home", "📖 Book Management", "🧑‍🤝‍🧑 Member Management", "🔄 Transactions"]
-)
+    # Define pages based on role
+    if st.session_state.user_role == 'admin':
+        PAGES = {
+            "🏠 Home": page_home,
+            "📖 Book Management": page_book_management,
+            "🧑‍🤝‍🧑 Member Management": page_member_management,
+            "🔑 User Accounts": page_user_accounts,
+            "🔄 Transactions": page_transactions
+        }
+    else:  # 'member'
+        PAGES = {
+            "🏠 Home": page_home,
+            "🔄 Transactions": page_transactions
+        }
 
-st.sidebar.divider()
-st.sidebar.markdown("Made with [Streamlit](https.streamlit.io)")
+    page_selection = st.sidebar.radio("Go to", list(PAGES.keys()))
+    
+    st.sidebar.divider()
+    st.sidebar.markdown("Made with [Streamlit](https.streamlit.io)")
 
-# Page routing
-if page == "🏠 Home":
-    page_home()
-elif page == "📖 Book Management":
-    page_book_management()
-elif page == "🧑‍🤝‍🧑 Member Management":
-    page_member_management()
-elif page == "🔄 Transactions":
-    page_transactions()
+    # Display the selected page
+    page_function = PAGES[page_selection]
+    page_function()
+
