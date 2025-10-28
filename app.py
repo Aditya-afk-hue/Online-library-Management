@@ -618,6 +618,7 @@ if "logged_in" not in st.session_state:
     st.session_state.user_role = None
     st.session_state.username = None
     st.session_state.member_id = None
+    st.session_state.current_page = "🏠 Home" # Add this line
 
 if not st.session_state.logged_in:
     show_login_page()
@@ -649,13 +650,18 @@ else:
             "🔄 Transactions": page_transactions
         }
 
-    page_selection = st.sidebar.radio("Go to", list(PAGES.keys()))
+    # Replace radio buttons with modern buttons
+    for page_name, page_fn in PAGES.items():
+        # Add a subtle visual cue for the active page
+        button_type = "primary" if st.session_state.current_page == page_name else "secondary"
+        if st.sidebar.button(page_name, use_container_width=True, type=button_type):
+            st.session_state.current_page = page_name
+            st.rerun() # Rerun to reflect the page change immediately
     
     st.sidebar.divider()
     st.sidebar.info("Made with 📚 Streamlit")
 
     # Display the selected page
-    page_function = PAGES[page_selection]
+    page_function = PAGES[st.session_state.current_page]
     page_function()
-
 
