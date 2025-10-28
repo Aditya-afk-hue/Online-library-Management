@@ -5,6 +5,13 @@ import json  # To store lists in the SQL database
 from sqlalchemy.exc import OperationalError  # To catch DB errors
 from sqlalchemy import text # Import the text function
 
+# --- APP CONFIGURATION ---
+st.set_page_config(
+    page_title="Zenith Library SQL",
+    page_icon="📚",
+    layout="wide",
+)
+
 # --- DATABASE CONNECTION & INITIALIZATION ---
 
 # Initialize connection.
@@ -40,14 +47,20 @@ def initialize_database():
                 Checked_Out_ISBNs TEXT  -- Storing list as JSON string
             );
         """))
+        
+        # --- FIX IS HERE ---
         # Create users table for login
         s.execute(text("""
             CREATE TABLE IF NOT EXISTS users (
                 username TEXT PRIMARY KEY,
                 password TEXT,
-                role TEXT  -- 'admin' or 'member'
+                role TEXT,  -- 'admin' or 'member'
+                Member_ID TEXT, -- Added this column. Can be NULL for admins.
+                FOREIGN KEY (Member_ID) REFERENCES members(Member_ID)
             );
         """))
+        # --- END OF FIX ---
+
         # Create transactions table
         s.execute(text("""
             CREATE TABLE IF NOT EXISTS transactions (
@@ -72,19 +85,27 @@ def initialize_database():
 
             # Add sample members if table is empty
             if s.execute(text("SELECT COUNT(*) FROM members")).scalar() == 0:
-                s.execute(text("INSERT INTO members (Member_ID, Name, Checked_Out_ISBNs) VALUES "
-                          "('M-001', 'Alice Smith', '[]'),"
-                          "('M-002', 'Bob Johnson', '[]');"))
-            
-            # Add sample users if table is empty
-            if s.execute(text("SELECT COUNT(*) FROM users")).scalar() == 0:
-                s.execute(text("INSERT INTO users (username, password, role) VALUES "
-                          "('admin', 'admin123', 'admin'),"
-                          "('alice', 'pass123', 'member'),"
-                          "('bob', 'pass456', 'member');"))
+                member1_id = 'M-001'
+                member2_id = 'M-002'
+                s.execute(
+                    text("INSERT INTO members (Member_ID, Name, Checked_Out_ISBNs) VALUES "
+                         "(:id1, 'Alice Smith', '[]'),"
+                         "(:id2, 'Bob Johnson', '[]');"),
+                    params={"id1": member1_id, "id2": member2_id}
+                )
+
+                # Add sample users if table is empty
+                # Now we can link Member_ID on creation
+                if s.execute(text("SELECT COUNT(*) FROM users")).scalar() == 0:
+                    s.execute(text("INSERT INTO users (username, password, role, Member_ID) VALUES "
+                              "('admin', 'admin123', 'admin', NULL),"
+                              "('alice', 'pass123', 'member', :id1),"
+                              "('bob', 'pass456', 'member', :id2);"),
+                              params={"id1": member1_id, "id2": member2_id})
             
             s.commit()
-        except OperationalError:
+        except OperationalError as e:
+            st.error(f"Error during initialization: {e}")
             # Handle potential race condition or DB lock
             s.rollback()
 
@@ -98,7 +119,6 @@ def check_login(username, password):
     with conn.session as s:
         result = s.execute(
             text("SELECT role, Member_ID FROM users "
-            "LEFT JOIN members ON users.username = members.Name "
             "WHERE username = :username AND password = :password"),
             params={"username": username, "password": password}
         ).first()
@@ -108,8 +128,7 @@ def check_login(username, password):
             st.session_state.logged_in = True
             st.session_state.user_role = role
             st.session_state.username = username
-            # If user is a member, link them to their member profile
-            st.session_state.member_id = member_id if role == 'member' else None
+            st.session_state.member_id = member_id
             st.rerun()
         else:
             st.error("Incorrect username or password")
@@ -143,12 +162,19 @@ def page_home():
         st.subheader("Admin Dashboard")
         
         # Fetch metrics
-        total_books = conn.query("SELECT SUM(Total_Quantity) FROM books", ttl=5).iloc[0, 0]
-        available_books = conn.query("SELECT SUM(Available) FROM books", ttl=5).iloc[0, 0]
-        total_members = conn.query("SELECT COUNT(*) FROM members", ttl=5).iloc[0, 0]
+        total_books_result = conn.query("SELECT SUM(Total_Quantity) FROM books", ttl=5).iloc[0, 0]
+        available_books_result = conn.query("SELECT SUM(Available) FROM books", ttl=5).iloc[0, 0]
+        total_members_result = conn.query("SELECT COUNT(*) FROM members", ttl=5).iloc[0, 0]
+        total_titles_result = conn.query("SELECT COUNT(*) FROM books", ttl=5).iloc[0, 0]
+
+        total_books = total_books_result if total_books_result is not None else 0
+        available_books = available_books_result if available_books_result is not None else 0
+        total_members = total_members_result if total_members_result is not None else 0
+        total_titles = total_titles_result if total_titles_result is not None else 0
+
 
         col1, col2, col3 = st.columns(3)
-        col1.metric("Total Book Titles", conn.query("SELECT COUNT(*) FROM books", ttl=5).iloc[0, 0])
+        col1.metric("Total Book Titles", total_titles)
         col2.metric("Total Book Copies", f"{available_books} / {total_books}")
         col3.metric("Total Members", total_members)
         
@@ -228,6 +254,11 @@ def page_book_management():
     st.divider()
     st.subheader("Manage Existing Books")
     books_df = conn.query("SELECT * FROM books", ttl=5)
+    
+    if books_df.empty:
+        st.info("No books in the library. Add a book above.")
+        return
+
     st.dataframe(books_df, use_container_width=True)
 
     # Edit/Delete Section
@@ -245,13 +276,17 @@ def page_book_management():
         with col1:
             st.markdown(f"**Title:** {book_data['Title']}")
             # Edit Quantity
+            
+            # Ensure min_value is valid even if checked out count is 0
+            checked_out_count = book_data['Total_Quantity'] - book_data['Available']
+            min_qty = int(checked_out_count) # Cast to int
+            
             new_total_quantity = st.number_input(
                 "Update Total Quantity", 
-                min_value=book_data['Total_Quantity'] - book_data['Available'],
-                value=book_data['Total_Quantity']
+                min_value=min_qty,
+                value=int(book_data['Total_Quantity']) # Cast to int
             )
             if st.button("Update Quantity"):
-                checked_out_count = book_data['Total_Quantity'] - book_data['Available']
                 new_available = new_total_quantity - checked_out_count
                 
                 with conn.session as s:
@@ -325,34 +360,47 @@ def page_user_accounts():
             password = st.text_input("Password", type="password")
             role = st.selectbox("Role", ["member", "admin"])
             
-            # Link to member profile if role is 'member'
-            member_name_options = conn.query("SELECT Name FROM members ORDER BY Name", ttl=5)['Name']
+            member_id_to_link = None
             if role == 'member':
-                name = st.selectbox("Link to Member Profile (Name)", member_name_options)
+                # Get members who are NOT already linked to a user account
+                member_options_df = conn.query(
+                    """
+                    SELECT m.Member_ID, m.Name FROM members m
+                    LEFT JOIN users u ON m.Member_ID = u.Member_ID
+                    WHERE u.username IS NULL
+                    ORDER BY m.Name
+                    """,
+                    ttl=5
+                )
+                if member_options_df.empty:
+                    st.warning("No unlinked member profiles available.")
+                else:
+                    member_id_to_link = st.selectbox(
+                        "Link to Member Profile", 
+                        options=member_options_df['Member_ID'],
+                        format_func=lambda x: f"{x} - {member_options_df.set_index('Member_ID').loc[x, 'Name']}"
+                    )
             
             submitted = st.form_submit_button("Create User")
             
             if submitted:
                 if not (username and password and role):
                     st.error("Please fill all fields.")
+                elif role == 'member' and not member_id_to_link:
+                    st.error("Please select a member profile to link.")
                 else:
-                    if role == 'member' and not name:
-                        st.error("Please select a member profile to link.")
-                        return
                     try:
                         with conn.session as s:
                             # Note: In a real app, hash the password!
                             s.execute(
-                                text("INSERT INTO users (username, password, role) VALUES (:user, :pass, :role)"),
-                                params={"user": username, "pass": password, "role": role}
+                                text("INSERT INTO users (username, password, role, Member_ID) VALUES (:user, :pass, :role, :member_id)"),
+                                params={
+                                    "user": username, 
+                                    "pass": password, 
+                                    "role": role, 
+                                    "member_id": member_id_to_link
+                                }
                             )
-                            # Link user to member profile
-                            if role == 'member':
-                                s.execute(
-                                    text("UPDATE users SET Member_ID = (SELECT Member_ID FROM members WHERE Name = :name) "
-                                    "WHERE username = :user"),
-                                    params={"name": name, "user": username}
-                                )
                             s.commit()
                         st.success(f"User '{username}' created with role '{role}'.")
                         st.rerun()
@@ -384,9 +432,15 @@ def page_transactions():
         if not st.session_state.member_id:
             st.error("Your account is not linked to a member profile. Cannot check out books.")
             return
+        
+        # Get name for the single member option
+        member_name = members_df.set_index('Member_ID').loc[st.session_state.member_id, 'Name']
+        member_format_func = lambda x: f"{x} - {member_name}"
+
     else:
         # Admins can select any member
         member_id_options = members_df['Member_ID']
+        member_format_func = lambda x: f"{x} - {members_df.set_index('Member_ID').loc[x, 'Name']}"
 
 
     col1, col2 = st.columns(2)
@@ -398,15 +452,19 @@ def page_transactions():
             member_id = st.selectbox(
                 "Select Member", 
                 options=member_id_options,
-                format_func=lambda x: f"{x} - {members_df.set_index('Member_ID').loc[x, 'Name']}"
+                format_func=member_format_func
             )
             
             available_books_df = books_df[books_df['Available'] > 0]
-            isbn = st.selectbox(
-                "Select Book (Available)", 
-                options=available_books_df['ISBN'],
-                format_func=lambda x: f"{x} - {available_books_df.set_index('ISBN').loc[x, 'Title']}"
-            )
+            if available_books_df.empty:
+                st.info("No books are currently available to check out.")
+                isbn = None
+            else:
+                isbn = st.selectbox(
+                    "Select Book (Available)", 
+                    options=available_books_df['ISBN'],
+                    format_func=lambda x: f"{x} - {available_books_df.set_index('ISBN').loc[x, 'Title']}"
+                )
             
             checkout_submitted = st.form_submit_button("Check Out")
 
@@ -451,18 +509,20 @@ def page_transactions():
             member_id_return = st.selectbox(
                 "Select Member Returning Book", 
                 options=member_id_options,
-                format_func=lambda x: f"{x} - {members_df.set_index('Member_ID').loc[x, 'Name']}",
+                format_func=member_format_func,
                 key="return_member_select"
             )
             
             books_to_return_options = []
             if member_id_return:
-                json_isbns = conn.query(
+                json_isbns_result = conn.query(
                     "SELECT Checked_Out_ISBNs FROM members WHERE Member_ID = :id",
                     params={"id": member_id_return},
                     ttl=5
-                ).iloc[0,0]
-                books_to_return_options = json.loads(json_isbns)
+                )
+                if not json_isbns_result.empty:
+                    json_isbns = json_isbns_result.iloc[0,0]
+                    books_to_return_options = json.loads(json_isbns)
             
             if not books_to_return_options:
                 st.info("This member has no books checked out.")
@@ -478,7 +538,18 @@ def page_transactions():
 
             if return_submitted and member_id_return and isbn_return:
                 with conn.session as s:
+                    # Re-fetch the list inside the transaction
+                    json_isbns = s.execute(
+                        text("SELECT Checked_Out_ISBNs FROM members WHERE Member_ID = :id"),
+                        params={"id": member_id_return}
+                    ).scalar()
+                    
                     isbns = json.loads(json_isbns)
+                    if isbn_return not in isbns:
+                        st.error("Book not found in member's checked out list. Refreshing.")
+                        st.rerun()
+                        return
+
                     isbns.remove(isbn_return)
                     new_json_isbns = json.dumps(isbns)
                     
@@ -539,10 +610,9 @@ else:
     page_selection = st.sidebar.radio("Go to", list(PAGES.keys()))
     
     st.sidebar.divider()
-    st.sidebar.markdown("Made with [Streamlit](https.streamlit.io)")
+    st.sidebar.markdown("Made with [Streamlit](https://streamlit.io)")
 
     # Display the selected page
     page_function = PAGES[page_selection]
     page_function()
-
 
